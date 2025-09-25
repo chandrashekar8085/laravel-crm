@@ -1,45 +1,37 @@
-FROM php:8.1-apache
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    libpng-dev \
-    libonig-dev \
-    libxml2-dev \
-    libzip-dev \
-    zip \
-    unzip \
-    nodejs \
-    npm \
-    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd zip
-
-# Get Composer
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
-
-# Set working directory
-WORKDIR /var/www/html
-
-# Copy application files
+# 1) Build frontend
+FROM node:18 AS node-builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
 COPY . .
+RUN npm run build
 
-# Install PHP dependencies
-RUN composer install --no-dev --optimize-autoloader
+# 2) Composer / PHP dependencies
+FROM composer:2 AS vendor
+WORKDIR /app
+COPY composer.json composer.lock /app/
+RUN composer install --no-dev --no-interaction --optimize-autoloader
 
-# Install Node dependencies and build assets
-RUN npm install && npm run build
+# 3) Final runtime with Apache
+FROM php:8.1-apache
+ENV APACHE_DOCUMENT_ROOT /var/www/html/public
 
-# Set permissions
+# Apache & PHP ext
+RUN apt-get update && apt-get install -y \
+    libpng-dev libonig-dev libxml2-dev libzip-dev zip unzip \
+    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd zip \
+    && a2enmod rewrite
+
+# Copy app
+COPY --from=vendor /app /var/www/html
+COPY --from=node-builder /app/public/build /var/www/html/public/build
+
+# copy remaining files
+COPY . /var/www/html
+
+# permissions
 RUN chown -R www-data:www-data /var/www/html \
-    && chmod -R 755 /var/www/html/storage \
-    && chmod -R 755 /var/www/html/bootstrap/cache
-
-# Enable Apache mod_rewrite
-RUN a2enmod rewrite
-
-# Copy Apache configuration
-COPY docker/apache-krayin.conf /etc/apache2/sites-available/000-default.conf
+    && chmod -R 755 /var/www/html/storage /var/www/html/bootstrap/cache
 
 EXPOSE 80
-
 CMD ["apache2-foreground"]
